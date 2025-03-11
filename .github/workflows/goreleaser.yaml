@@ -1,11 +1,9 @@
 name: goreleaser
 
 on:
-  pull_request:
   push:
-
-permissions:
-  contents: write
+    tags:
+      - "v*.*.*"
 
 jobs:
   goreleaser:
@@ -13,20 +11,20 @@ jobs:
     steps:
       -
         name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
         with:
           fetch-depth: 0
       -
         name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v3
+        with:
+          go-version: 1.23.4
       -
         name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v4
         with:
-          # either 'goreleaser' (default) or 'goreleaser-pro'
           distribution: goreleaser
-          # 'latest', 'nightly', or a semver
-          version: '~> v2'
+          version: latest
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

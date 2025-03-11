@@ -1,0 +1,620 @@
+The following text represents a project with code. The structure of the text consists of sections beginning with ----, followed by a single line containing the file path and file name, and then a variable number of lines containing the file contents. The text representing the project ends when the symbols --END-- are encountered. Any further text beyond --END-- is meant to be interpreted as instructions using the aforementioned project as context.
+----
+go.sum
+github.com/fatih/color v1.15.0 h1:kOqh6YHBtK8aywxGerMG2Eq3H6Qgoqeo13Bk2Mv/nBs=
+github.com/fatih/color v1.15.0/go.mod h1:0h5ZqXfHYED7Bhv2ZJamyIOUej9KtShiJESRwBDUSsw=
+github.com/mattn/go-colorable v0.1.13 h1:fFA4WZxdEF4tXPZVKMLwD8oUnCTTo08duU7wxecdEvA=
+github.com/mattn/go-colorable v0.1.13/go.mod h1:7S9/ev0klgBDR4GtXTXX8a3vIGJpMovkB8vQcUbaXHg=
+github.com/mattn/go-isatty v0.0.16/go.mod h1:kYGgaQfpe5nmfYZH+SKPsOc2e4SrIfOl2e/yFXSvRLM=
+github.com/mattn/go-isatty v0.0.19 h1:JITubQf0MOLdlGRuRq+jtsDlekdYPia9ZFsB8h/APPA=
+github.com/mattn/go-isatty v0.0.19/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
+github.com/spf13/pflag v1.0.5 h1:iy+VFUOCP1a+8yFto/drg2CJ5u0yRoB7fZw3DKv/JXA=
+github.com/spf13/pflag v1.0.5/go.mod h1:McXfInJRrz4CZXVZOBLb0bTZqETkiAhM9Iw0y3An2Bg=
+golang.org/x/sys v0.0.0-20220811171246-fbc7d0a398ab/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+golang.org/x/sys v0.6.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+golang.org/x/sys v0.12.0 h1:CM0HF96J0hcLAwsHPJZjfdNzs0gftsLfgKt57wWHJ0o=
+golang.org/x/sys v0.12.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+
+----
+go.mod
+module github.com/idanyas/speedflare
+
+go 1.20
+
+require (
+	github.com/fatih/color v1.15.0
+	github.com/spf13/pflag v1.0.5
+)
+
+require (
+	github.com/mattn/go-colorable v0.1.13 // indirect
+	github.com/mattn/go-isatty v0.0.19 // indirect
+	golang.org/x/sys v0.12.0 // indirect
+)
+
+----
+README.md
+# speedflare
+CLI to check internet speed through Cloudflare servers. (inspired by speedtest-go)
+
+----
+.goreleaser.yaml
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+    - go generate ./...
+
+builds:
+  - main: ./cmd/speedflare/main.go
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+    goarch: [386, "arm", "amd64", "arm64"]
+    goamd64:
+      - v3
+    ignore:
+      - goarch: arm
+        goos: windows
+      - goarch: arm64
+        goos: windows
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+upx:
+  - enabled: true
+    compress: 6
+    lzma: true
+
+archives:
+  - formats: ["binary"]
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- tolower .Os }}_
+      {{- if eq .Arch "amd64" }}amd64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+----
+internal/output/output.go
+package output
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"sync/atomic"
+	"time"
+
+	"github.com/fatih/color"
+
+	"github.com/idanyas/speedflare/internal/data"
+	"github.com/idanyas/speedflare/internal/location"
+)
+
+func PrintHeader(jsonOutput bool) {
+	if jsonOutput {
+		return
+	}
+	cyan := color.New(color.FgCyan)
+	cyan.Printf("\n    speedflare v%s\n\n", version)
+}
+
+func ShowLocations(client *http.Client) {
+	locs, err := location.FetchLocations(client)
+	if err != nil {
+		fmt.Printf("Error fetching locations: %v\n", err)
+		return
+	}
+
+	fmt.Println("Cloudflare Server Locations:")
+	fmt.Printf("%-5s %-15s %-8s %-15s\n", "IATA", "City", "Country", "Region")
+	for _, loc := range locs {
+		fmt.Printf("%-5s %-15s %-8s %-15s\n", loc.IATA, loc.City, loc.CCA2, loc.Region)
+	}
+}
+
+func PrintConnectionInfo(trace map[string]string, server data.Server, jsonOutput bool) {
+	if jsonOutput {
+		return
+	}
+	cyan := color.New(color.FgCyan).SprintFunc()
+	fmt.Printf("%s Your IP: %s [%s]\n", cyan("✓"), trace["ip"], trace["loc"])
+	fmt.Printf("%s Server: %s, %s (%s) [%.4f, %.4f]\n\n",
+		cyan("✓"),
+		server.City,
+		server.Country,
+		server.IATA,
+		server.Lat,
+		server.Lon,
+	)
+}
+
+func OutputJSON(results *data.TestResult) {
+	jsonData, _ := json.MarshalIndent(results, "", "  ")
+	fmt.Println(string(jsonData))
+}
+
+func PrintLatencyInfo(latency *data.LatencyResult, jsonOutput bool) {
+	if jsonOutput {
+		return
+	}
+	green := color.New(color.FgGreen).SprintFunc()
+	fmt.Printf("%s Latency: %.2f ms (Jitter: %.2f ms, Min: %.2f ms, Max: %.2f ms)\n",
+		green("✓"),
+		latency.Avg,
+		latency.Jitter,
+		latency.Min,
+		latency.Max,
+	)
+}
+
+func ProgressReporter(name string, done <-chan struct{}, totalBytes *int64, start time.Time, jsonOutput bool) {
+	if jsonOutput {
+		return
+	}
+	cyan := color.New(color.FgCyan).SprintFunc()
+	spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	i := 0
+
+	for {
+		select {
+		case <-done:
+			return
+		default:
+			time.Sleep(100 * time.Millisecond)
+			bytes := atomic.LoadInt64(totalBytes)
+			speed := (float64(bytes) * 8 / 1e6) / time.Since(start).Seconds()
+
+			fmt.Printf("\r\033[K%s %s %.2f Mbps",
+				cyan(spinner[i]),
+				name,
+				speed,
+			)
+			i = (i + 1) % len(spinner)
+		}
+	}
+}
+
+----
+internal/location/location.go
+package location
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"sort"
+	"strings"
+
+	"github.com/idanyas/speedflare/internal/data"
+)
+
+func GetServerTrace(client *http.Client) (map[string]string, error) {
+	resp, err := client.Get("https://speed.cloudflare.com/cdn-cgi/trace")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	info := make(map[string]string)
+	for _, line := range strings.Split(string(body), "\n") {
+		if parts := strings.SplitN(line, "=", 2); len(parts) == 2 {
+			info[parts[0]] = parts[1]
+		}
+	}
+	return info, nil
+}
+
+func FetchLocations(client *http.Client) ([]data.Location, error) {
+	resp, err := client.Get("https://speed.cloudflare.com/locations")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var locations []data.Location
+	if err := json.NewDecoder(resp.Body).Decode(&locations); err != nil {
+		return nil, err
+	}
+
+	sort.Slice(locations, func(i, j int) bool {
+		return locations[i].IATA < locations[j].IATA
+	})
+
+	return locations, nil
+}
+
+func FindServerInfo(iata string, locs []data.Location) (data.Server, error) {
+	for _, loc := range locs {
+		if loc.IATA == iata {
+			return data.Server{
+				IATA:    loc.IATA,
+				City:    loc.City,
+				Country: loc.CCA2,
+				Lat:     loc.Lat,
+				Lon:     loc.Lon,
+			}, nil
+		}
+	}
+	return data.Server{}, fmt.Errorf("server location not found")
+}
+
+----
+internal/data/data.go
+package data
+
+type Location struct {
+	IATA   string  `json:"iata"`
+	City   string  `json:"city"`
+	CCA2   string  `json:"cca2"`
+	Region string  `json:"region"`
+	Lat    float64 `json:"lat"`
+	Lon    float64 `json:"lon"`
+}
+
+type TestResult struct {
+	IP       string `json:"ip"`
+	Server   Server `json:"server"`
+	Latency  Stats  `json:"latency"`
+	Download Speed  `json:"download"`
+	Upload   Speed  `json:"upload"`
+}
+
+type Server struct {
+	IATA    string  `json:"iata"`
+	City    string  `json:"city"`
+	Country string  `json:"country"`
+	Lat     float64 `json:"lat"`
+	Lon     float64 `json:"lon"`
+}
+
+type Stats struct {
+	Value  float64 `json:"value_ms"`
+	Jitter float64 `json:"jitter_ms"`
+	Min    float64 `json:"min_ms"`
+	Max    float64 `json:"max_ms"`
+}
+
+type Speed struct {
+	Mbps   float64 `json:"mbps"`
+	DataMB float64 `json:"data_mb"`
+}
+
+type LatencyResult struct {
+	Avg    float64
+	Jitter float64
+	Min    float64
+	Max    float64
+}
+
+----
+internal/client/client.go
+package client
+
+import (
+	"context"
+	"net"
+	"net/http"
+	"time"
+)
+
+func NewHTTPClient(ipv4 bool, ipv6 bool) *http.Client {
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if ipv4 {
+				network = "tcp4"
+			} else if ipv6 {
+				network = "tcp6"
+			}
+			return dialer.DialContext(ctx, network, addr)
+		},
+		MaxIdleConns:       100,
+		IdleConnTimeout:    90 * time.Second,
+		DisableCompression: true,
+		ForceAttemptHTTP2:  true,
+	}
+
+	return &http.Client{
+		Transport: transport,
+		Timeout:   30 * time.Second,
+	}
+}
+
+----
+internal/app/app.go
+package app
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"math"
+	"math/rand"
+	"net/http"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/fatih/color"
+
+	"github.com/idanyas/speedflare/internal/data"
+	"github.com/idanyas/speedflare/internal/location"
+	"github.com/idanyas/speedflare/internal/output"
+)
+
+func RunSpeedTest(client *http.Client, latencyAttempts int, workers int, singleConnection bool, jsonOutput bool) (*data.TestResult, error) {
+	trace, err := location.GetServerTrace(client)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get server info: %w", err)
+	}
+
+	locs, err := location.FetchLocations(client)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get locations: %w", err)
+	}
+
+	server, err := location.FindServerInfo(trace["colo"], locs)
+	if err != nil {
+		return nil, err
+	}
+
+	output.PrintConnectionInfo(trace, server, jsonOutput)
+
+	latency, err := measureLatency(client, latencyAttempts)
+	if err != nil {
+		return nil, fmt.Errorf("latency test failed: %w", err)
+	}
+	output.PrintLatencyInfo(latency, jsonOutput)
+
+	download := runTest("Download:", downloadWorker, client, !singleConnection, workers, jsonOutput)
+	upload := runTest("Upload:", uploadWorker, client, !singleConnection, workers, jsonOutput)
+
+	return &data.TestResult{
+		IP:     trace["ip"],
+		Server: server,
+		Latency: data.Stats{
+			Value:  latency.Avg,
+			Jitter: latency.Jitter,
+			Min:    latency.Min,
+			Max:    latency.Max,
+		},
+		Download: data.Speed{
+			Mbps:   download.mbps,
+			DataMB: download.dataMB,
+		},
+		Upload: data.Speed{
+			Mbps:   upload.mbps,
+			DataMB: upload.dataMB,
+		},
+	}, nil
+}
+
+func measureLatency(client *http.Client, latencyAttempts int) (*data.LatencyResult, error) {
+	attempts := latencyAttempts
+	var latencies []float64
+
+	for i := 0; i < attempts; i++ {
+		start := time.Now()
+		resp, err := client.Get("https://speed.cloudflare.com/cdn-cgi/trace")
+		if err != nil {
+			return nil, err
+		}
+		resp.Body.Close()
+		latency := time.Since(start).Seconds() * 1000
+		latencies = append(latencies, latency)
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	sum := 0.0
+	min := math.MaxFloat64
+	max := 0.0
+	for _, l := range latencies {
+		sum += l
+		if l < min {
+			min = l
+		}
+		if l > max {
+			max = l
+		}
+	}
+	avg := sum / float64(len(latencies))
+
+	jitterSum := 0.0
+	for _, l := range latencies {
+		jitterSum += math.Abs(l - avg)
+	}
+	jitter := jitterSum / float64(len(latencies))
+
+	return &data.LatencyResult{
+		Avg:    avg,
+		Jitter: jitter,
+		Min:    min,
+		Max:    max,
+	}, nil
+}
+
+type testResult struct {
+	mbps   float64
+	dataMB float64
+}
+
+func runTest(name string, worker func(context.Context, *int64, *http.Client) testResult, client *http.Client, multiple bool, workers int, jsonOutput bool) testResult {
+	var totalBytes int64
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	start := time.Now()
+
+	var wg sync.WaitGroup
+	numWorkers := 1
+	if multiple {
+		numWorkers = workers
+	}
+
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			worker(ctx, &totalBytes, client)
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	go output.ProgressReporter(name, done, &totalBytes, start, jsonOutput)
+
+	<-done
+	duration := time.Since(start).Seconds()
+	mbps := (float64(atomic.LoadInt64(&totalBytes)*8) / (duration * 1e6))
+	dataMB := float64(atomic.LoadInt64(&totalBytes)) / 1e6
+
+	if !jsonOutput {
+		green := color.New(color.FgGreen).SprintFunc()
+		fmt.Printf("\r%s %s %.2f Mbps (Used: %.2f MB)    \n",
+			green("✓"),
+			name,
+			mbps,
+			dataMB,
+		)
+	}
+
+	return testResult{mbps, dataMB}
+}
+
+func downloadWorker(ctx context.Context, totalBytes *int64, client *http.Client) testResult {
+	req, _ := http.NewRequestWithContext(ctx, "GET", "https://speed.cloudflare.com/__down?bytes=2147483648", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		return testResult{}
+	}
+	defer resp.Body.Close()
+
+	buf := make([]byte, 32*1024)
+	for {
+		select {
+		case <-ctx.Done():
+			return testResult{}
+		default:
+			n, err := resp.Body.Read(buf)
+			if err != nil {
+				return testResult{}
+			}
+			atomic.AddInt64(totalBytes, int64(n))
+		}
+	}
+}
+
+func uploadWorker(ctx context.Context, totalBytes *int64, client *http.Client) testResult {
+	pr, pw := io.Pipe()
+	go func() {
+		defer pw.Close()
+		buf := make([]byte, 1<<20)
+		rand.Read(buf)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				n, _ := pw.Write(buf)
+				atomic.AddInt64(totalBytes, int64(n))
+			}
+		}
+	}()
+
+	req, _ := http.NewRequest("POST", "https://speed.cloudflare.com/__up", pr)
+	req = req.WithContext(ctx)
+	_, err := client.Do(req)
+	if err != nil {
+		return testResult{}
+	}
+	return testResult{}
+}
+
+----
+cmd/speedflare/main.go
+package main
+
+import (
+	"fmt"
+	"os"
+
+	"github.com/spf13/pflag"
+
+	"github.com/idanyas/speedflare/internal/app"
+	"github.com/idanyas/speedflare/internal/client"
+	"github.com/idanyas/speedflare/internal/output"
+)
+
+var (
+	version          = "DEV"
+	jsonOutput       = pflag.BoolP("json", "j", false, "Output results in JSON format.")
+	list             = pflag.Bool("list", false, "List all Cloudflare server locations.")
+	ipv4             = pflag.BoolP("ipv4", "4", false, "Use IPv4 only connection.")
+	ipv6             = pflag.BoolP("ipv6", "6", false, "Use IPv6 only connection.")
+	latencyAttempts  = pflag.IntP("latency-attempts", "l", 10, "Number of latency attempts.")
+	singleConnection = pflag.BoolP("single", "s", false, "Use a single connection instead of multiple.")
+	workers          = pflag.IntP("workers", "w", 6, "Number of workers for multithreaded speedtests.")
+)
+
+func main() {
+	pflag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [options...]\n\n", os.Args[0])
+		fmt.Fprintln(os.Stderr, "Options:")
+		pflag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nCreated by idanya, https://idanya.ru (v%s)\n", version)
+	}
+	pflag.CommandLine.Init(os.Args[0], pflag.ContinueOnError)
+	err := pflag.CommandLine.Parse(os.Args[1:])
+	if err != nil {
+		if err == pflag.ErrHelp {
+			os.Exit(0)
+		}
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(2)
+	}
+
+	output.PrintHeader(*jsonOutput)
+
+	if *list {
+		httpClient := client.NewHTTPClient(*ipv4, *ipv6)
+		output.ShowLocations(httpClient)
+		return
+	}
+
+	httpClient := client.NewHTTPClient(*ipv4, *ipv6)
+
+	results, err := app.RunSpeedTest(httpClient, *latencyAttempts, *workers, *singleConnection, *jsonOutput)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *jsonOutput {
+		output.OutputJSON(results)
+	}
+}
+
+--END--

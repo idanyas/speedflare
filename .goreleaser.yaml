@@ -36,13 +36,27 @@ builds:
         goos: windows
     ldflags:
       - -s -w -X main.version={{.Version}}
+    arch_mappings:
+      amd64: amd64 # Removes "_v1" suffix
+      arm64: arm64 # Removes "_v8.0" suffix
+      386: i386 # Maps "386" to "i386" (removes "_sse2")
+      arm: arm # Removes "_6" suffix
+      ppc64: ppc64 # Removes "_power8" suffix
+      ppc64le: ppc64le # Removes "_power8" suffix
+      riscv64: riscv64 # Removes "_rva20u64" suffix
+      mips: mips # Removes "_hardfloat" suffix
+      mips64: mips64 # Removes "_hardfloat" suffix
+      mipsle: mipsle # Removes "_hardfloat" suffix
+      mips64le: mips64le# Removes "_hardfloat" suffix
+      loong64: loong64
+      s390x: s390x
 
 archives:
   - formats: ["binary"]
     name_template: >-
       {{ .ProjectName }}_
       {{- tolower .Os }}_
-      {{- if eq .Arch "amd64" }}x86_64
+      {{- if eq .Arch "amd64" }}amd64
       {{- else if eq .Arch "386" }}i386
       {{- else if eq .Arch "arm" }}arm
       {{- else }}{{ .Arch }}{{ end -}}

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -24,14 +26,73 @@ func PrintHeader(jsonOutput bool, version string) {
 func ShowLocations(client *http.Client) {
 	locs, err := location.FetchLocations(client)
 	if err != nil {
-		fmt.Printf("Error fetching locations: %v\n", err)
+		fmt.Fprintf(os.Stdout, "Error fetching locations: %v\n", err)
 		return
 	}
 
-	fmt.Println("Cloudflare Server Locations:")
-	fmt.Printf("%-5s %-15s %-8s %-15s\n", "IATA", "City", "Country", "Region")
+	// Sort locations by CCA2 (2-letter country code)
+	sort.Slice(locs, func(i, j int) bool {
+		return locs[i].CCA2 < locs[j].CCA2
+	})
+
+	// Find maximum lengths from data
+	maxIATA_from_data := 0
+	maxCity_from_data := 0
+	maxCountry_from_data := 0
+	maxRegion_from_data := 0
 	for _, loc := range locs {
-		fmt.Printf("%-5s %-15s %-8s %-15s\n", loc.IATA, loc.City, loc.CCA2, loc.Region)
+		if len(loc.IATA) > maxIATA_from_data {
+			maxIATA_from_data = len(loc.IATA)
+		}
+		if len(loc.City) > maxCity_from_data {
+			maxCity_from_data = len(loc.City)
+		}
+		if len(loc.CCA2) > maxCountry_from_data {
+			maxCountry_from_data = len(loc.CCA2)
+		}
+		if len(loc.Region) > maxRegion_from_data {
+			maxRegion_from_data = len(loc.Region)
+		}
+	}
+
+	// Set final maximum lengths considering headers
+	maxIATA := func(a int) int {
+		if len("IATA") > a {
+			return len("IATA")
+		}
+		return a
+	}(maxIATA_from_data)
+	maxCity := func(a int) int {
+		if len("City") > a {
+			return len("City")
+		}
+		return a
+	}(maxCity_from_data)
+	maxCountry := func(a int) int {
+		if len("Country") > a {
+			return len("Country")
+		}
+		return a
+	}(maxCountry_from_data)
+	maxRegion := func(a int) int {
+		if len("Region") > a {
+			return len("Region")
+		}
+		return a
+	}(maxRegion_from_data)
+
+	// Print header
+	fmt.Fprintf(os.Stdout, "%-*.*s ", maxIATA, maxIATA, "IATA")
+	fmt.Fprintf(os.Stdout, "%-*.*s ", maxCity, maxCity, "City")
+	fmt.Fprintf(os.Stdout, "%-*.*s ", maxCountry, maxCountry, "Country")
+	fmt.Fprintf(os.Stdout, "%-*.*s\n", maxRegion, maxRegion, "Region")
+
+	// Print each location
+	for _, loc := range locs {
+		fmt.Fprintf(os.Stdout, "%-*.*s ", maxIATA, maxIATA, loc.IATA)
+		fmt.Fprintf(os.Stdout, "%-*.*s ", maxCity, maxCity, loc.City)
+		fmt.Fprintf(os.Stdout, "%-*.*s ", maxCountry, maxCountry, loc.CCA2)
+		fmt.Fprintf(os.Stdout, "%-*.*s\n", maxRegion, maxRegion, loc.Region)
 	}
 }
 

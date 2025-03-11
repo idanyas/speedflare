@@ -1,4 +1,4 @@
-version: 2 
+version: 2
 
 hooks:
   - go mod download
@@ -44,7 +44,8 @@ archives:
       {{- if eq .Arch "amd64" }}x86_64
       {{- else if eq .Arch "386" }}i386
       {{- else if eq .Arch "arm" }}arm
-      {{- else }}{{ .Arch }}{{ end }}
+      {{- else }}{{ .Arch }}{{ end -}}
+      {{- if eq .Os "windows" }}.exe{{ end }}
 
 changelog:
   sort: asc

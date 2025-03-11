@@ -69,16 +69,28 @@ func measureLatency(client *http.Client, latencyAttempts int) (*data.LatencyResu
 	attempts := latencyAttempts
 	var latencies []float64
 
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		return nil, fmt.Errorf("invalid transport type, expected *http.Transport")
+	}
+
 	for i := 0; i < attempts; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		start := time.Now()
-		resp, err := client.Get("https://speed.cloudflare.com/cdn-cgi/trace")
+		conn, err := transport.DialContext(ctx, "tcp", "speed.cloudflare.com:443")
 		if err != nil {
-			return nil, err
+			cancel()
+			return nil, fmt.Errorf("failed to dial server: %w", err)
 		}
-		resp.Body.Close()
-		latency := time.Since(start).Seconds() * 1000
+		conn.Close()
+		cancel()
+		latency := time.Since(start).Seconds() * 1000 // Convert to milliseconds
 		latencies = append(latencies, latency)
-		time.Sleep(100 * time.Millisecond)
+
+		// Introduce random jitter between attempts (0-50ms)
+		if i < attempts-1 {
+			time.Sleep(time.Duration(rand.Intn(50)) * time.Millisecond)
+		}
 	}
 
 	sum := 0.0

@@ -1,3 +1,5 @@
+version: 2 
+
 hooks:
   - go mod download
   - go generate ./...

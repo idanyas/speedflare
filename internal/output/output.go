@@ -70,13 +70,6 @@ func PrintLatencyInfo(latency *data.LatencyResult, jsonOutput bool) {
 	)
 }
 
-type latencyResult struct {
-	avg    float64
-	jitter float64
-	min    float64
-	max    float64
-}
-
 func ProgressReporter(name string, done <-chan struct{}, totalBytes *int64, start time.Time, jsonOutput bool) {
 	if jsonOutput {
 		return

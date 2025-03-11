@@ -29,7 +29,7 @@ upx:
     lzma: true
 
 archives:
-  - format: binary
+  - formats: ["binary"]
     name_template: >-
       {{ .ProjectName }}_
       {{- tolower .Os }}_

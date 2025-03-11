@@ -47,9 +47,6 @@ go install github.com/idanyas/speedflare@latest
 # Basic speed test 
 ./speedflare 
 
-# List all Cloudflare server locations 
-./speedflare --list 
-
 # Force IPv6 and use 8 workers 
 ./speedflare --ipv6 --workers 8 
 

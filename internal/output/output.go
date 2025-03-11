@@ -13,12 +13,12 @@ import (
 	"github.com/idanyas/speedflare/internal/location"
 )
 
-func PrintHeader(jsonOutput bool) {
+func PrintHeader(jsonOutput bool, version string) {
 	if jsonOutput {
 		return
 	}
 	cyan := color.New(color.FgCyan)
-	cyan.Printf("\n    speedflare v0.1.0\n\n")
+	cyan.Printf("\n    speedflare v%s\n\n", version)
 }
 
 func ShowLocations(client *http.Client) {

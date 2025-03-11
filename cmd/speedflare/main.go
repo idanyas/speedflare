@@ -39,7 +39,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	output.PrintHeader(*jsonOutput)
+	output.PrintHeader(*jsonOutput, version)
 
 	if *list {
 		httpClient := client.NewHTTPClient(*ipv4, *ipv6)

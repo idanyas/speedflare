@@ -10,11 +10,11 @@ type Location struct {
 }
 
 type TestResult struct {
-	IP       string    `json:"ip"`
-	Server   Server    `json:"server"`
-	Latency  Stats     `json:"latency"`
-	Download Speed     `json:"download"`
-	Upload   Speed     `json:"upload"`
+	IP       string `json:"ip"`
+	Server   Server `json:"server"`
+	Latency  Stats  `json:"latency"`
+	Download Speed  `json:"download"`
+	Upload   Speed  `json:"upload"`
 }
 
 type Server struct {
@@ -38,8 +38,8 @@ type Speed struct {
 }
 
 type LatencyResult struct {
-    Avg    float64
-    Jitter float64
-    Min    float64
-    Max    float64
+	Avg    float64
+	Jitter float64
+	Min    float64
+	Max    float64
 }

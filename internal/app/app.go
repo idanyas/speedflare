@@ -102,13 +102,12 @@ func measureLatency(client *http.Client, latencyAttempts int) (*data.LatencyResu
 	jitter := jitterSum / float64(len(latencies))
 
 	return &data.LatencyResult{
-        Avg:    avg,
-        Jitter: jitter,
-        Min:    min,
-        Max:    max,
-    }, nil
+		Avg:    avg,
+		Jitter: jitter,
+		Min:    min,
+		Max:    max,
+	}, nil
 }
-
 
 type testResult struct {
 	mbps   float64
@@ -163,7 +162,7 @@ func runTest(name string, worker func(context.Context, *int64, *http.Client) tes
 }
 
 func downloadWorker(ctx context.Context, totalBytes *int64, client *http.Client) testResult {
-	req, _ := http.NewRequestWithContext(ctx, "GET", "https://speed.cloudflare.com/__down?bytes=1000000000", nil)
+	req, _ := http.NewRequestWithContext(ctx, "GET", "https://speed.cloudflare.com/__down?bytes=2147483648", nil)
 	resp, err := client.Do(req)
 	if err != nil {
 		return testResult{}

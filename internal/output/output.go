@@ -3,8 +3,8 @@ package output
 import (
 	"encoding/json"
 	"fmt"
-	"sync/atomic"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/fatih/color"
@@ -56,7 +56,6 @@ func OutputJSON(results *data.TestResult) {
 	fmt.Println(string(jsonData))
 }
 
-
 func PrintLatencyInfo(latency *data.LatencyResult, jsonOutput bool) {
 	if jsonOutput {
 		return
@@ -77,7 +76,6 @@ type latencyResult struct {
 	min    float64
 	max    float64
 }
-
 
 func ProgressReporter(name string, done <-chan struct{}, totalBytes *int64, start time.Time, jsonOutput bool) {
 	if jsonOutput {

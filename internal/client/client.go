@@ -25,7 +25,7 @@ func NewHTTPClient(ipv4 bool, ipv6 bool) *http.Client {
 		MaxIdleConns:       100,
 		IdleConnTimeout:    90 * time.Second,
 		DisableCompression: true,
-		ForceAttemptHTTP2:   true,
+		ForceAttemptHTTP2:  true,
 	}
 
 	return &http.Client{

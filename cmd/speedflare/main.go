@@ -12,13 +12,13 @@ import (
 )
 
 var (
-	jsonOutput      = pflag.BoolP("json", "j", false, "Output results in JSON format.")
-	list            = pflag.Bool("list", false, "List all Cloudflare server locations.")
-	ipv4            = pflag.BoolP("ipv4", "4", false, "Use IPv4 only connection.")
-	ipv6            = pflag.BoolP("ipv6", "6", false, "Use IPv6 only connection.")
-	latencyAttempts = pflag.IntP("latency-attempts", "l", 10, "Number of latency attempts.")
+	jsonOutput       = pflag.BoolP("json", "j", false, "Output results in JSON format.")
+	list             = pflag.Bool("list", false, "List all Cloudflare server locations.")
+	ipv4             = pflag.BoolP("ipv4", "4", false, "Use IPv4 only connection.")
+	ipv6             = pflag.BoolP("ipv6", "6", false, "Use IPv6 only connection.")
+	latencyAttempts  = pflag.IntP("latency-attempts", "l", 10, "Number of latency attempts.")
 	singleConnection = pflag.BoolP("single", "s", false, "Use a single connection instead of multiple.")
-	workers         = pflag.IntP("workers", "w", 4, "Number of workers for multithreaded speedtests.")
+	workers          = pflag.IntP("workers", "w", 6, "Number of workers for multithreaded speedtests.")
 )
 
 func main() {

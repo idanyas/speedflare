@@ -1,8 +1,9 @@
 version: 2
 
-hooks:
-  - go mod download
-  - go generate ./...
+before:
+  hooks:
+    - go mod download
+    - go generate ./...
 
 builds:
   - main: ./cmd/speedflare/main.go

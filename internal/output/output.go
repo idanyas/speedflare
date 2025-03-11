@@ -94,7 +94,7 @@ func ProgressReporter(name string, done <-chan struct{}, totalBytes *int64, star
 			bytes := atomic.LoadInt64(totalBytes)
 			speed := (float64(bytes) * 8 / 1e6) / time.Since(start).Seconds()
 
-			fmt.Printf("\r\033[K%s %s %6.2f Mbps",
+			fmt.Printf("\r\033[K%s %s %.2f Mbps",
 				cyan(spinner[i]),
 				name,
 				speed,

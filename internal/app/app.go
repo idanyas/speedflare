@@ -150,7 +150,7 @@ func runTest(name string, worker func(context.Context, *int64, *http.Client) tes
 
 	if !jsonOutput {
 		green := color.New(color.FgGreen).SprintFunc()
-		fmt.Printf("\r%s %s %6.2f Mbps (Used: %.2f MB)    \n",
+		fmt.Printf("\r%s %s %.2f Mbps (Used: %.2f MB)    \n",
 			green("✓"),
 			name,
 			mbps,

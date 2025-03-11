@@ -1,9 +1,6 @@
-version: 2
-
-before:
-  hooks:
-    - go mod tidy
-    - go generate ./...
+hooks:
+  - go mod download
+  - go generate ./...
 
 builds:
   - main: ./cmd/speedflare/main.go
@@ -12,9 +9,23 @@ builds:
     goos:
       - linux
       - windows
-    goarch: [386, "arm", "amd64", "arm64"]
-    goamd64:
-      - v3
+      - darwin
+      - openbsd
+      - freebsd
+    goarch:
+      - amd64
+      - arm
+      - arm64
+      - 386
+      - s390x
+      - ppc64
+      - ppc64le
+      - riscv64
+      - mips
+      - mips64
+      - mipsle
+      - mips64le
+      - loong64
     ignore:
       - goarch: arm
         goos: windows
@@ -23,20 +34,15 @@ builds:
     ldflags:
       - -s -w -X main.version={{.Version}}
 
-upx:
-  - enabled: true
-    compress: 6
-    lzma: true
-
 archives:
   - formats: ["binary"]
     name_template: >-
       {{ .ProjectName }}_
       {{- tolower .Os }}_
-      {{- if eq .Arch "amd64" }}amd64
+      {{- if eq .Arch "amd64" }}x86_64
       {{- else if eq .Arch "386" }}i386
+      {{- else if eq .Arch "arm" }}arm
       {{- else }}{{ .Arch }}{{ end }}
-      {{- if .Arm }}v{{ .Arm }}{{ end }}
 
 changelog:
   sort: asc

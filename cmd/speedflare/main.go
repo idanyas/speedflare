@@ -12,6 +12,7 @@ import (
 )
 
 var (
+	version          = "dev"
 	jsonOutput       = pflag.BoolP("json", "j", false, "Output results in JSON format.")
 	list             = pflag.Bool("list", false, "List all Cloudflare server locations.")
 	ipv4             = pflag.BoolP("ipv4", "4", false, "Use IPv4 only connection.")
@@ -26,7 +27,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options...]\n\n", os.Args[0])
 		fmt.Fprintln(os.Stderr, "Options:")
 		pflag.PrintDefaults()
-		fmt.Fprintln(os.Stderr, "\nCreated by idanya, https://idanya.ru (v0.1.0)")
+		fmt.Fprintln(os.Stderr, "\nCreated by idanya, https://idanya.ru (v%s)", version)
 	}
 	pflag.CommandLine.Init(os.Args[0], pflag.ContinueOnError)
 	err := pflag.CommandLine.Parse(os.Args[1:])

@@ -50,20 +50,19 @@ archives:
       {{- $arch = replace $arch "_power8" "" -}}
       {{- $arch = replace $arch "_rva20u64" "" -}}
       {{- $arch = replace $arch "_hardfloat" "" -}}
-      {{- switch $arch }}
-        {{- case "amd64" }}amd64
-        {{- case "386" }}i386
-        {{- case "arm" }}arm
-        {{- case "arm64" }}arm64
-        {{- case "ppc64le" }}ppc64le
-        {{- case "ppc64" }}ppc64
-        {{- case "riscv64" }}riscv64
-        {{- case "mips64le" }}mips64le
-        {{- case "mips64" }}mips64
-        {{- case "mipsle" }}mipsle
-        {{- case "mips" }}mips
-        {{- case "loong64" }}loong64
-        {{- else }}{{ $arch }}
+      {{- if eq $arch "amd64" }}amd64
+      {{- else if eq $arch "386" }}i386
+      {{- else if eq $arch "arm" }}arm
+      {{- else if eq $arch "arm64" }}arm64
+      {{- else if eq $arch "ppc64le" }}ppc64le
+      {{- else if eq $arch "ppc64" }}ppc64
+      {{- else if eq $arch "riscv64" }}riscv64
+      {{- else if eq $arch "mips64le" }}mips64le
+      {{- else if eq $arch "mips64" }}mips64
+      {{- else if eq $arch "mipsle" }}mipsle
+      {{- else if eq $arch "mips" }}mips
+      {{- else if eq $arch "loong64" }}loong64
+      {{- else }}{{ $arch }}
       {{- end -}}
       {{- if eq .Os "windows" }}.exe{{- end }}
 

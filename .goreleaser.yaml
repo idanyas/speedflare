@@ -9,6 +9,7 @@ builds:
   - main: ./cmd/speedflare/main.go
     env:
       - CGO_ENABLED=0
+      - GOAMD64=v1
     goos:
       - linux
       - windows

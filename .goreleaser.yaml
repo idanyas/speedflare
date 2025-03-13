@@ -61,7 +61,6 @@ archives:
       {{- else if eq $arch "loong64" }}loong64
       {{- else }}{{ $arch }}
       {{- end -}}
-      {{- if eq .Os "windows" }}.exe{{- end }}
 
 changelog:
   sort: asc

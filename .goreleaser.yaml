@@ -9,7 +9,6 @@ builds:
   - main: ./cmd/speedflare/main.go
     env:
       - CGO_ENABLED=0
-      - GOAMD64=v1
     goos:
       - linux
       - windows
@@ -30,11 +29,8 @@ builds:
       - mipsle
       - mips64le
       - loong64
-    ignore:
-      - goarch: arm
-        goos: windows
-      - goarch: arm64
-        goos: windows
+    goamd64:
+      - v2
     ldflags:
       - -s -w -X main.version={{.Version}}
 

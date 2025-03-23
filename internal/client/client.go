@@ -104,19 +104,21 @@ func resolveWithDoH(ctx context.Context, host string, dnsTypes []uint16) ([]net.
 		if err != nil {
 			return nil, err
 		}
-		req.Host = "cloudflare-dns.com"
 		req.Header.Set("Accept", "application/dns-message")
 
 		transport := &http.Transport{
 			TLSClientConfig: &tls.Config{
-				ServerName: "cloudflare-dns.com",
+				InsecureSkipVerify: true,
 			},
 		}
-		client := &http.Client{Transport: transport}
+		client := &http.Client{
+			Transport: transport,
+			Timeout:   5 * time.Second,
+		}
 
 		resp, err := client.Do(req)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("DoH request failed: %w", err)
 		}
 		defer resp.Body.Close()
 

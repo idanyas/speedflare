@@ -17,8 +17,26 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gwatts/rootcerts"
 	"github.com/miekg/dns"
 )
+
+// getEffectiveRootCAs attempts to load system CAs and falls back to embedded ones.
+func getEffectiveRootCAs() *x509.CertPool {
+	sysPool, err := x509.SystemCertPool()
+	if err != nil {
+		log.Printf("Warning: Failed to load system root CA pool: %v. Using embedded certs as fallback.\n", err)
+		// Fallback to embedded CAs
+		return rootcerts.ServerCertPool()
+	}
+	if sysPool == nil {
+		log.Printf("Warning: System root CA pool is nil. Using embedded certs as fallback.\n")
+		// Fallback to embedded CAs if system returned nil without error
+		return rootcerts.ServerCertPool()
+	}
+	// Use system CAs if loaded successfully
+	return sysPool
+}
 
 // getLocalAddr selects an IP address from the specified interface or returns a direct TCPAddr if an IP is provided.
 func getLocalAddr(interfaceOrIP string, ipv4Only, ipv6Only bool) (net.Addr, error) {
@@ -82,7 +100,7 @@ func getLocalAddr(interfaceOrIP string, ipv4Only, ipv6Only bool) (net.Addr, erro
 				selectedIP = ip
 				break
 			} else if isIPv4 {
-				if selectedIP == nil || (selectedIP != nil && selectedIP.IsLinkLocalUnicast()) {
+				if selectedIP == nil || (selectedIP.IsLinkLocalUnicast()) {
 					selectedIP = ip // Prefer IPv4 over link-local IPv6
 				}
 			} else if isIPv6 && ip.IsLinkLocalUnicast() && selectedIP == nil {
@@ -121,14 +139,15 @@ func NewHTTPClient(ipv4Only, ipv6Only bool, interfaceOrIP string, insecureSkipVe
 		LocalAddr: localAddr, // Set the local address for binding
 	}
 
-	// Attempt to load system root CAs
-	rootCAs, err := x509.SystemCertPool()
-	if err != nil {
-		log.Printf("Warning: Failed to load system root CA pool: %v. Proceeding with default TLS behavior.\n", err)
-		// Don't create an empty pool, let Go's TLS defaults handle it (nil means use system defaults)
-		rootCAs = nil
+	// Get the effective root CA pool (system or embedded fallback)
+	var effectiveRootCAs *x509.CertPool
+	if !insecureSkipVerify {
+		effectiveRootCAs = getEffectiveRootCAs()
+	} else {
+		// Explicitly set to nil if insecureSkipVerify is true, although
+		// InsecureSkipVerify=true overrides RootCAs anyway.
+		effectiveRootCAs = nil
 	}
-	// If insecureSkipVerify is true, we don't need rootCAs anyway for verification.
 
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment, // Ensure proxy settings are respected
@@ -207,7 +226,7 @@ func NewHTTPClient(ipv4Only, ipv6Only bool, interfaceOrIP string, insecureSkipVe
 
 			// Resolve hostname using the multi-stage resolver
 			// Pass insecureSkipVerify down to DoH resolver
-			resolvedIPs, resolveErr := resolveHost(ctx, host, ipv4Only, ipv6Only, insecureSkipVerify)
+			resolvedIPs, resolveErr := resolveHost(ctx, host, ipv4Only, ipv6Only, insecureSkipVerify, effectiveRootCAs) // Pass down effective CAs
 			if resolveErr != nil {
 				return nil, fmt.Errorf("DNS resolution failed for %s: %w", host, resolveErr)
 			}
@@ -281,7 +300,7 @@ func NewHTTPClient(ipv4Only, ipv6Only bool, interfaceOrIP string, insecureSkipVe
 		DisableCompression:    true,
 		ForceAttemptHTTP2:     true,
 		TLSClientConfig: &tls.Config{
-			RootCAs:            rootCAs,                // Use the loaded system pool (or nil for default)
+			RootCAs:            effectiveRootCAs,       // Use the chosen pool (system or embedded)
 			ServerName:         "speed.cloudflare.com", // Set SNI explicitly
 			InsecureSkipVerify: insecureSkipVerify,     // Set based on the flag
 		},
@@ -294,13 +313,14 @@ func NewHTTPClient(ipv4Only, ipv6Only bool, interfaceOrIP string, insecureSkipVe
 }
 
 // resolveHost attempts to resolve a hostname using DoH, then system DNS, then direct DNS queries.
-func resolveHost(ctx context.Context, host string, ipv4Only, ipv6Only bool, insecureSkipVerify bool) ([]net.IP, error) { // Added insecureSkipVerify
+// Pass down the effective root CAs pool for DoH client configuration.
+func resolveHost(ctx context.Context, host string, ipv4Only, ipv6Only bool, insecureSkipVerify bool, rootCAs *x509.CertPool) ([]net.IP, error) {
 	var lastErr error
 	var ips []net.IP
 
 	// Attempt 1: DoH
-	// Pass insecureSkipVerify down
-	ips, err := resolveWithDoH(ctx, host, ipv4Only, ipv6Only, insecureSkipVerify)
+	// Pass insecureSkipVerify and rootCAs down
+	ips, err := resolveWithDoH(ctx, host, ipv4Only, ipv6Only, insecureSkipVerify, rootCAs)
 	if err == nil && len(ips) > 0 {
 		return ips, nil // DoH succeeded
 	}
@@ -392,22 +412,24 @@ func resolveHost(ctx context.Context, host string, ipv4Only, ipv6Only bool, inse
 }
 
 // resolveWithDoH tries to resolve using DNS over HTTPS.
-func resolveWithDoH(ctx context.Context, host string, ipv4Only, ipv6Only bool, insecureSkipVerify bool) ([]net.IP, error) { // Added insecureSkipVerify
+func resolveWithDoH(ctx context.Context, host string, ipv4Only, ipv6Only bool, insecureSkipVerify bool, rootCAs *x509.CertPool) ([]net.IP, error) { // Added rootCAs param
 	dohServers := []struct {
-		address string // e.g., "1.1.1.1:443"
+		address string // e.g., "1.1.1.1:443" or "[ipv6]:443"
 		sni     string // e.g., "cloudflare-dns.com"
 		isV4    bool
 	}{
+		// IPv4
 		{"1.1.1.1:443", "cloudflare-dns.com", true},
 		{"1.0.0.1:443", "cloudflare-dns.com", true},
-		{"8.8.8.8:443", "dns.google", true},    // Google DoH
-		{"8.8.4.4:443", "dns.google", true},    // Google DoH
-		{"9.9.9.9:443", "dns.quad9.net", true}, // Quad9 DoH
-		{"2606:4700:4700::1111:443", "cloudflare-dns.com", false},
-		{"2606:4700:4700::1001:443", "cloudflare-dns.com", false},
-		{"2001:4860:4860::8888:443", "dns.google", false}, // Google DoH IPv6
-		{"2001:4860:4860::8844:443", "dns.google", false}, // Google DoH IPv6
-		{"2620:fe::fe:443", "dns.quad9.net", false},       // Quad9 DoH IPv6
+		{"8.8.8.8:443", "dns.google", true},
+		{"8.8.4.4:443", "dns.google", true},
+		{"9.9.9.9:443", "dns.quad9.net", true},
+		// IPv6 - *FIXED: Added brackets*
+		{"[2606:4700:4700::1111]:443", "cloudflare-dns.com", false},
+		{"[2606:4700:4700::1001]:443", "cloudflare-dns.com", false},
+		{"[2001:4860:4860::8888]:443", "dns.google", false},
+		{"[2001:4860:4860::8844]:443", "dns.google", false},
+		{"[2620:fe::fe]:443", "dns.quad9.net", false},
 	}
 
 	// Shuffle servers to distribute load and avoid hitting the same failing one first
@@ -415,12 +437,7 @@ func resolveWithDoH(ctx context.Context, host string, ipv4Only, ipv6Only bool, i
 		dohServers[i], dohServers[j] = dohServers[j], dohServers[i]
 	})
 
-	// Reuse system pool loading logic (warning on failure, proceed with nil)
-	rootCAs, err := x509.SystemCertPool()
-	if err != nil {
-		log.Printf("Warning: Failed to load system root CA pool for DoH: %v. Proceeding with default TLS behavior.\n", err)
-		rootCAs = nil
-	}
+	// rootCAs pool is now passed in
 
 	var ips []net.IP
 	var queryTypes []uint16
@@ -488,7 +505,7 @@ func resolveWithDoH(ctx context.Context, host string, ipv4Only, ipv6Only bool, i
 				dohTransport := &http.Transport{
 					TLSClientConfig: &tls.Config{
 						ServerName:         server.sni,
-						RootCAs:            rootCAs,
+						RootCAs:            rootCAs,            // Use the passed-in pool
 						InsecureSkipVerify: insecureSkipVerify, // Apply flag here too
 					},
 					Proxy: http.ProxyFromEnvironment, // Respect proxy for DoH too
@@ -500,6 +517,7 @@ func resolveWithDoH(ctx context.Context, host string, ipv4Only, ipv6Only bool, i
 						// Use a context with timeout for the dial itself
 						dialCtx, dialCancel := context.WithTimeout(ctx, 3*time.Second)
 						defer dialCancel()
+						// server.address should now be correctly formatted (e.g., "[::1]:443")
 						return dialer.DialContext(dialCtx, dohNet, server.address)
 					},
 					DisableKeepAlives:     true, // DoH requests are typically single-use
@@ -537,6 +555,11 @@ func resolveWithDoH(ctx context.Context, host string, ipv4Only, ipv6Only bool, i
 						errStr := fmt.Sprintf("DoH request to %s (%s) failed: %v", server.sni, server.address, err)
 						if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "context deadline exceeded") {
 							errStr += " (timeout)"
+						}
+						// Add hint for certificate errors
+						var certErr *x509.UnknownAuthorityError
+						if errors.As(err, &certErr) || strings.Contains(err.Error(), "certificate signed by unknown authority") {
+							errStr += " (certificate verification failed)"
 						}
 						currentErr := errors.New(errStr) // Use errors.New for simple string
 						if lastErr != nil {
@@ -721,16 +744,16 @@ func resolveWithDirectDNS(ctx context.Context, host string, ipv4Only, ipv6Only b
 		// Cloudflare
 		{"1.1.1.1:53", true},
 		{"1.0.0.1:53", true},
-		{"[2606:4700:4700::1111]:53", false},
-		{"[2606:4700:4700::1001]:53", false},
+		{"[2606:4700:4700::1111]:53", false}, // Format is correct for miekg/dns
+		{"[2606:4700:4700::1001]:53", false}, // Format is correct for miekg/dns
 		// Google
 		{"8.8.8.8:53", true},
 		{"8.8.4.4:53", true},
-		{"[2001:4860:4860::8888]:53", false},
-		{"[2001:4860:4860::8844]:53", false},
+		{"[2001:4860:4860::8888]:53", false}, // Format is correct for miekg/dns
+		{"[2001:4860:4860::8844]:53", false}, // Format is correct for miekg/dns
 		// Quad9
 		{"9.9.9.9:53", true},
-		{"[2620:fe::fe]:53", false},
+		{"[2620:fe::fe]:53", false}, // Format is correct for miekg/dns
 	}
 
 	// Shuffle servers
@@ -811,10 +834,12 @@ func resolveWithDirectDNS(ctx context.Context, host string, ipv4Only, ipv6Only b
 				}
 
 				// Retry with TCP if needed and not already successful (and not cancelled)
+				var tcpCtx context.Context // Declare tcpCtx here
+				var tcpCancel context.CancelFunc
 				if needsTCPRetry && !errors.Is(queryCtx.Err(), context.Canceled) && (response == nil || response.Rcode != dns.RcodeSuccess) {
 					attemptedTCP = true
 					// Create a context for the TCP attempt
-					tcpCtx, tcpCancel := context.WithTimeout(queryCtx, dnsClientTCP.Timeout)
+					tcpCtx, tcpCancel = context.WithTimeout(queryCtx, dnsClientTCP.Timeout) // Assign to declared variables
 					defer tcpCancel()
 					response, rtt, err = dnsClientTCP.ExchangeContext(tcpCtx, m, serverAddr)
 					// Check for parent cancellation again after TCP attempt
@@ -841,9 +866,11 @@ func resolveWithDirectDNS(ctx context.Context, host string, ipv4Only, ipv6Only b
 						errStr += fmt.Sprintf(" (RCODE: %s)", dns.RcodeToString[response.Rcode])
 					}
 					// Check specific context errors for timeout hints
-					if errors.Is(err, context.DeadlineExceeded) || errors.Is(udpCtx.Err(), context.DeadlineExceeded) {
+					// FIX: Check queryCtx.Err() instead of ctx directly. Also check tcpCtx.Err() if attemptedTCP.
+					if errors.Is(err, context.DeadlineExceeded) || errors.Is(udpCtx.Err(), context.DeadlineExceeded) || (attemptedTCP && tcpCtx != nil && errors.Is(tcpCtx.Err(), context.DeadlineExceeded)) || errors.Is(queryCtx.Err(), context.DeadlineExceeded) {
 						errStr += " (timeout)"
 					}
+
 					currentErr := errors.New(errStr) // Use errors.New for simple string
 					if lastErr != nil {
 						lastErr = fmt.Errorf("%w; %w", lastErr, currentErr)

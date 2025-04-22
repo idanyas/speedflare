@@ -6,6 +6,7 @@ toolchain go1.24.1
 
 require (
 	github.com/fatih/color v1.15.0
+	github.com/gwatts/rootcerts v0.0.0-20250301185136-8180986b1a75
 	github.com/spf13/pflag v1.0.5
 )
 

@@ -21,23 +21,6 @@ import (
 	"github.com/miekg/dns"
 )
 
-// getEffectiveRootCAs attempts to load system CAs and falls back to embedded ones.
-func getEffectiveRootCAs() *x509.CertPool {
-	sysPool, err := x509.SystemCertPool()
-	if err != nil {
-		log.Printf("Warning: Failed to load system root CA pool: %v. Using embedded certs as fallback.\n", err)
-		// Fallback to embedded CAs
-		return rootcerts.ServerCertPool()
-	}
-	if sysPool == nil {
-		log.Printf("Warning: System root CA pool is nil. Using embedded certs as fallback.\n")
-		// Fallback to embedded CAs if system returned nil without error
-		return rootcerts.ServerCertPool()
-	}
-	// Use system CAs if loaded successfully
-	return sysPool
-}
-
 // getLocalAddr selects an IP address from the specified interface or returns a direct TCPAddr if an IP is provided.
 func getLocalAddr(interfaceOrIP string, ipv4Only, ipv6Only bool) (net.Addr, error) {
 	if interfaceOrIP == "" {
@@ -109,8 +92,6 @@ func getLocalAddr(interfaceOrIP string, ipv4Only, ipv6Only bool) (net.Addr, erro
 		}
 	}
 
-	// Line 85: nilness check seems to be a false positive from some linters.
-	// The selectedIP variable can indeed be nil here if no suitable IP is found.
 	if selectedIP == nil {
 		family := "any"
 		if ipv4Only {
@@ -121,61 +102,80 @@ func getLocalAddr(interfaceOrIP string, ipv4Only, ipv6Only bool) (net.Addr, erro
 		return nil, fmt.Errorf("no suitable %s IP address found for interface %q", family, interfaceOrIP)
 	}
 
-	// Create a TCPAddr with the selected IP and port 0
 	return &net.TCPAddr{IP: selectedIP, Port: 0}, nil
 }
 
 // NewHTTPClient creates a new HTTP client with options for IP version, interface binding, and TLS verification skipping.
-func NewHTTPClient(ipv4Only, ipv6Only bool, interfaceOrIP string, insecureSkipVerify bool) (*http.Client, error) { // Renamed param for clarity
-	localAddr, err := getLocalAddr(interfaceOrIP, ipv4Only, ipv6Only)
+func NewHTTPClient(ipv4OnlyFlag, ipv6OnlyFlag bool, interfaceOrIP string, insecureSkipVerify bool) (*http.Client, error) {
+	localAddr, err := getLocalAddr(interfaceOrIP, ipv4OnlyFlag, ipv6OnlyFlag)
 	if err != nil {
-		// Don't wrap the error here, as it's already specific enough.
 		return nil, err
 	}
 
 	dialer := &net.Dialer{
 		Timeout:   30 * time.Second,
 		KeepAlive: 30 * time.Second,
-		LocalAddr: localAddr, // Set the local address for binding
+		LocalAddr: localAddr,
 	}
 
-	// Get the effective root CA pool (system or embedded fallback)
-	var effectiveRootCAs *x509.CertPool
-	if !insecureSkipVerify {
-		effectiveRootCAs = getEffectiveRootCAs()
-	} else {
-		// Explicitly set to nil if insecureSkipVerify is true, although
-		// InsecureSkipVerify=true overrides RootCAs anyway.
-		effectiveRootCAs = nil
+	// Prepare base TLS config
+	tlsClientConfig := &tls.Config{
+		ServerName:         "speed.cloudflare.com", // Default SNI for the main client's transport
+		InsecureSkipVerify: insecureSkipVerify,
 	}
+
+	if !insecureSkipVerify {
+		// Use rootcerts.ServerCertPool() which attempts to load system CAs
+		// and appends its own embedded Mozilla CA bundle. If system CAs
+		// fail to load, it returns a pool with only the embedded CAs.
+		tlsClientConfig.RootCAs = rootcerts.ServerCertPool()
+
+		// As a final safeguard, if tlsClientConfig.RootCAs is still somehow nil
+		// (which shouldn't happen with a functional rootcerts.ServerCertPool()),
+		// explicitly log and set it.
+		if tlsClientConfig.RootCAs == nil {
+			log.Println("Warning: rootcerts.ServerCertPool() returned nil. This indicates a problem with root certificate loading. Forcing embedded certs again.")
+			// Attempting again or panicking might be options, but for now, re-assigning is a simple fallback.
+			tlsClientConfig.RootCAs = rootcerts.ServerCertPool()
+			if tlsClientConfig.RootCAs == nil {
+				// This would be a critical failure of the rootcerts library or environment.
+				return nil, errors.New("critical failure: unable to obtain a valid root CA pool")
+			}
+		}
+	}
+	// If insecureSkipVerify is true, tlsClientConfig.RootCAs remains nil (or whatever it was, usually nil),
+	// and InsecureSkipVerify=true takes precedence in TLS handshake, which is correct.
 
 	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment, // Ensure proxy settings are respected
-		// Use the pre-configured dialer in DialContext
+		Proxy: http.ProxyFromEnvironment,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			networkPreference := "tcp" // Default network type
-			if ipv4Only {
+			// These flags are local to DialContext, initially taking values from NewHTTPClient's parameters.
+			// They might be modified if LocalAddr forces a specific IP family.
+			currentIpv4Only := ipv4OnlyFlag
+			currentIpv6Only := ipv6OnlyFlag
+
+			networkPreference := "tcp"
+			if currentIpv4Only {
 				networkPreference = "tcp4"
-			} else if ipv6Only {
+			} else if currentIpv6Only {
 				networkPreference = "tcp6"
 			}
 
-			// If LocalAddr forces a specific IP version, update flags and preference
 			if tcpAddr, ok := dialer.LocalAddr.(*net.TCPAddr); ok && tcpAddr.IP != nil {
 				if tcpAddr.IP.To4() != nil {
-					if ipv6Only { // Conflict check
+					if currentIpv6Only {
 						return nil, fmt.Errorf("cannot bind to IPv4 address %s when --ipv6 is specified", tcpAddr.IP.String())
 					}
 					networkPreference = "tcp4"
-					ipv4Only = true
-					ipv6Only = false
+					currentIpv4Only = true
+					currentIpv6Only = false
 				} else {
-					if ipv4Only { // Conflict check
+					if currentIpv4Only {
 						return nil, fmt.Errorf("cannot bind to IPv6 address %s when --ipv4 is specified", tcpAddr.IP.String())
 					}
 					networkPreference = "tcp6"
-					ipv6Only = true
-					ipv4Only = false
+					currentIpv6Only = true
+					currentIpv4Only = false
 				}
 			}
 
@@ -184,7 +184,6 @@ func NewHTTPClient(ipv4Only, ipv6Only bool, interfaceOrIP string, insecureSkipVe
 				return nil, fmt.Errorf("invalid address format: %w", err)
 			}
 
-			// If host is already an IP, just dial it using the configured dialer
 			if ip := net.ParseIP(host); ip != nil {
 				isIPv4 := ip.To4() != nil
 				currentNetworkType := "tcp6"
@@ -192,13 +191,9 @@ func NewHTTPClient(ipv4Only, ipv6Only bool, interfaceOrIP string, insecureSkipVe
 					currentNetworkType = "tcp4"
 				}
 
-				// Check if IP version matches preference forced by flags or local address
 				if (networkPreference == "tcp4" && !isIPv4) || (networkPreference == "tcp6" && isIPv4) {
-					// This can happen if the address (e.g. speed.cloudflare.com:443) resolves
-					// to an IP that doesn't match the required family.
 					return nil, fmt.Errorf("target IP address %s does not match required network type %s", host, networkPreference)
 				}
-				// Use the dialer which has LocalAddr set
 				conn, dialErr := dialer.DialContext(ctx, currentNetworkType, net.JoinHostPort(ip.String(), port))
 				if dialErr != nil {
 					errMsg := fmt.Sprintf("failed to dial IP %s:%s", ip.String(), port)
@@ -210,7 +205,6 @@ func NewHTTPClient(ipv4Only, ipv6Only bool, interfaceOrIP string, insecureSkipVe
 					}
 					errMsg = fmt.Sprintf("%s: %v", errMsg, dialErr)
 
-					// Check for specific error types
 					var opErr *net.OpError
 					if errors.As(dialErr, &opErr) {
 						if opErr.Op == "dial" && strings.Contains(opErr.Err.Error(), "invalid argument") {
@@ -224,56 +218,45 @@ func NewHTTPClient(ipv4Only, ipv6Only bool, interfaceOrIP string, insecureSkipVe
 				return conn, nil
 			}
 
-			// Resolve hostname using the multi-stage resolver
-			// Pass insecureSkipVerify down to DoH resolver
-			resolvedIPs, resolveErr := resolveHost(ctx, host, ipv4Only, ipv6Only, insecureSkipVerify, effectiveRootCAs) // Pass down effective CAs
+			// Resolve hostname using the multi-stage resolver.
+			// Pass the RootCAs pool from the prepared tlsClientConfig.
+			// Also pass currentIpv4Only/currentIpv6Only which reflect any LocalAddr constraints.
+			resolvedIPs, resolveErr := resolveHost(ctx, host, currentIpv4Only, currentIpv6Only, insecureSkipVerify, tlsClientConfig.RootCAs)
 			if resolveErr != nil {
 				return nil, fmt.Errorf("DNS resolution failed for %s: %w", host, resolveErr)
 			}
 			if len(resolvedIPs) == 0 {
-				// This case should ideally be covered by resolveHost returning an error, but handle defensively
-				return nil, fmt.Errorf("DNS resolution failed: no usable IPs returned for %s (ipv4=%v, ipv6=%v)", host, ipv4Only, ipv6Only)
+				return nil, fmt.Errorf("DNS resolution failed: no usable IPs returned for %s (ipv4=%v, ipv6=%v)", host, currentIpv4Only, currentIpv6Only)
 			}
 
-			// Try dialing resolved IPs using the configured dialer
 			var firstDialErr error
 			for _, ip := range resolvedIPs {
 				ipStr := ip.String()
 				isIPv4 := ip.To4() != nil
 
-				// Determine the correct network type for this specific IP
-				currentNetworkPreference := "tcp"
+				currentNetworkType := "tcp"
 				if isIPv4 {
-					currentNetworkPreference = "tcp4"
+					currentNetworkType = "tcp4"
 				} else {
-					currentNetworkPreference = "tcp6"
+					currentNetworkType = "tcp6"
 				}
 
-				// Ensure IP matches overall network preference forced by flags or local address
-				// This check should already be handled by resolveHost filtering, but double-check
 				if (networkPreference == "tcp4" && !isIPv4) || (networkPreference == "tcp6" && isIPv4) {
-					log.Printf("Debug: Skipping resolved IP %s as it doesn't match required family %s\n", ipStr, networkPreference)
-					continue // Skip this IP as it doesn't match the required network type
+					// log.Printf("Debug: Skipping resolved IP %s as it doesn't match required family %s\n", ipStr, networkPreference)
+					continue
 				}
 
-				// Use the dialer with the potentially set LocalAddr
-				// Dial using the specific network type for the resolved IP
-				conn, dialErr := dialer.DialContext(ctx, currentNetworkPreference, net.JoinHostPort(ipStr, port))
+				conn, dialErr := dialer.DialContext(ctx, currentNetworkType, net.JoinHostPort(ipStr, port))
 				if dialErr == nil {
 					return conn, nil // Success
 				}
 				if firstDialErr == nil {
-					firstDialErr = dialErr // Store the first error encountered
-				} else {
-					// Optionally log subsequent errors for debugging
-					// log.Printf("Debug: Dial attempt failed for %s:%s: %v", ipStr, port, dialErr)
+					firstDialErr = dialErr
 				}
 			}
 
-			// If all attempts failed
 			errMsg := fmt.Sprintf("connection failed to all resolved IPs for %s:%s", host, port)
 			if firstDialErr != nil {
-				// Check for specific error types in the first error
 				var opErr *net.OpError
 				if errors.As(firstDialErr, &opErr) {
 					if opErr.Op == "dial" && strings.Contains(opErr.Err.Error(), "invalid argument") {
@@ -295,40 +278,34 @@ func NewHTTPClient(ipv4Only, ipv6Only bool, interfaceOrIP string, insecureSkipVe
 		},
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second, // Add TLS handshake timeout
+		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		DisableCompression:    true,
 		ForceAttemptHTTP2:     true,
-		TLSClientConfig: &tls.Config{
-			RootCAs:            effectiveRootCAs,       // Use the chosen pool (system or embedded)
-			ServerName:         "speed.cloudflare.com", // Set SNI explicitly
-			InsecureSkipVerify: insecureSkipVerify,     // Set based on the flag
-		},
+		TLSClientConfig:       tlsClientConfig, // Use the prepared tlsClientConfig for the main transport
 	}
 
 	return &http.Client{
 		Transport: transport,
-		Timeout:   30 * time.Second, // Keep overall client timeout
-	}, nil // Return nil error on success
+		Timeout:   30 * time.Second,
+	}, nil
 }
 
 // resolveHost attempts to resolve a hostname using DoH, then system DNS, then direct DNS queries.
-// Pass down the effective root CAs pool for DoH client configuration.
+// It receives the rootCAs pool to be used for DoH TLS verification.
 func resolveHost(ctx context.Context, host string, ipv4Only, ipv6Only bool, insecureSkipVerify bool, rootCAs *x509.CertPool) ([]net.IP, error) {
 	var lastErr error
 	var ips []net.IP
 
 	// Attempt 1: DoH
-	// Pass insecureSkipVerify and rootCAs down
 	ips, err := resolveWithDoH(ctx, host, ipv4Only, ipv6Only, insecureSkipVerify, rootCAs)
 	if err == nil && len(ips) > 0 {
-		return ips, nil // DoH succeeded
+		return ips, nil
 	}
 	if err != nil {
 		log.Printf("Debug: DoH resolution failed for %s: %v\n", host, err)
 		lastErr = fmt.Errorf("doH failed: %w", err)
 	} else {
-		// This case (err == nil but len(ips) == 0) means DoH completed but found no matching IPs.
 		lastErr = fmt.Errorf("doH failed: no matching IPs found (ipv4=%v, ipv6=%v)", ipv4Only, ipv6Only)
 	}
 
@@ -336,9 +313,8 @@ func resolveHost(ctx context.Context, host string, ipv4Only, ipv6Only bool, inse
 	resolver := net.Resolver{}
 	ipAddrs, err := resolver.LookupIPAddr(ctx, host)
 	if err == nil && len(ipAddrs) > 0 {
-		filteredSystemIPs := ipAddrs[:0] // Create a new slice for filtering
+		filteredSystemIPs := ipAddrs[:0]
 		for _, ipAddr := range ipAddrs {
-			// Ensure IP is not unspecified (0.0.0.0 or ::) or loopback
 			if ipAddr.IP.IsUnspecified() || ipAddr.IP.IsLoopback() {
 				continue
 			}
@@ -352,21 +328,17 @@ func resolveHost(ctx context.Context, host string, ipv4Only, ipv6Only bool, inse
 			filteredSystemIPs = append(filteredSystemIPs, ipAddr)
 		}
 		if len(filteredSystemIPs) > 0 {
-			// Convert []IPAddr to []net.IP
 			resultIPs := make([]net.IP, len(filteredSystemIPs))
 			for i, ipa := range filteredSystemIPs {
 				resultIPs[i] = ipa.IP
 			}
-			return resultIPs, nil // System resolver succeeded
+			return resultIPs, nil
 		}
-		// If system resolver returned IPs but none matched the filter or were usable
 		err = fmt.Errorf("system resolver returned IPs, but none matched filter or were usable (ipv4=%v, ipv6=%v)", ipv4Only, ipv6Only)
 	}
-	// Handle errors from LookupIPAddr or the case where no IPs were returned
 	if err != nil {
 		log.Printf("Debug: System DNS resolution failed for %s: %v\n", host, err)
 		sysDNSErr := fmt.Errorf("system DNS failed: %w", err)
-		// Ensure lastErr is chained correctly
 		if lastErr != nil {
 			lastErr = fmt.Errorf("%w; %w", lastErr, sysDNSErr)
 		} else {
@@ -384,7 +356,7 @@ func resolveHost(ctx context.Context, host string, ipv4Only, ipv6Only bool, inse
 	// Attempt 3: Direct DNS
 	ips, err = resolveWithDirectDNS(ctx, host, ipv4Only, ipv6Only)
 	if err == nil && len(ips) > 0 {
-		return ips, nil // Direct DNS succeeded
+		return ips, nil
 	}
 	if err != nil {
 		log.Printf("Debug: Direct DNS resolution failed for %s: %v\n", host, err)
@@ -394,7 +366,7 @@ func resolveHost(ctx context.Context, host string, ipv4Only, ipv6Only bool, inse
 		} else {
 			lastErr = directDNSErr
 		}
-	} else if len(ips) == 0 { // err == nil but no IPs
+	} else if len(ips) == 0 {
 		directDNSErr := fmt.Errorf("direct DNS failed: no matching IPs found (ipv4=%v, ipv6=%v)", ipv4Only, ipv6Only)
 		if lastErr != nil {
 			lastErr = fmt.Errorf("%w; %w", lastErr, directDNSErr)
@@ -403,8 +375,6 @@ func resolveHost(ctx context.Context, host string, ipv4Only, ipv6Only bool, inse
 		}
 	}
 
-	// All methods failed
-	// Ensure we return an error if lastErr is somehow still nil
 	if lastErr == nil {
 		lastErr = errors.New("all resolution methods failed")
 	}
@@ -412,19 +382,18 @@ func resolveHost(ctx context.Context, host string, ipv4Only, ipv6Only bool, inse
 }
 
 // resolveWithDoH tries to resolve using DNS over HTTPS.
-func resolveWithDoH(ctx context.Context, host string, ipv4Only, ipv6Only bool, insecureSkipVerify bool, rootCAs *x509.CertPool) ([]net.IP, error) { // Added rootCAs param
+// It receives the rootCAs pool (system+embedded or nil if insecure) for TLS verification.
+func resolveWithDoH(ctx context.Context, host string, ipv4Only, ipv6Only bool, insecureSkipVerify bool, rootCAs *x509.CertPool) ([]net.IP, error) {
 	dohServers := []struct {
-		address string // e.g., "1.1.1.1:443" or "[ipv6]:443"
-		sni     string // e.g., "cloudflare-dns.com"
+		address string
+		sni     string
 		isV4    bool
 	}{
-		// IPv4
 		{"1.1.1.1:443", "cloudflare-dns.com", true},
 		{"1.0.0.1:443", "cloudflare-dns.com", true},
 		{"8.8.8.8:443", "dns.google", true},
 		{"8.8.4.4:443", "dns.google", true},
 		{"9.9.9.9:443", "dns.quad9.net", true},
-		// IPv6 - *FIXED: Added brackets*
 		{"[2606:4700:4700::1111]:443", "cloudflare-dns.com", false},
 		{"[2606:4700:4700::1001]:443", "cloudflare-dns.com", false},
 		{"[2001:4860:4860::8888]:443", "dns.google", false},
@@ -432,12 +401,9 @@ func resolveWithDoH(ctx context.Context, host string, ipv4Only, ipv6Only bool, i
 		{"[2620:fe::fe]:443", "dns.quad9.net", false},
 	}
 
-	// Shuffle servers to distribute load and avoid hitting the same failing one first
 	rand.Shuffle(len(dohServers), func(i, j int) {
 		dohServers[i], dohServers[j] = dohServers[j], dohServers[i]
 	})
-
-	// rootCAs pool is now passed in
 
 	var ips []net.IP
 	var queryTypes []uint16
@@ -448,13 +414,12 @@ func resolveWithDoH(ctx context.Context, host string, ipv4Only, ipv6Only bool, i
 	case ipv6Only:
 		queryTypes = []uint16{dns.TypeAAAA}
 	default:
-		queryTypes = []uint16{dns.TypeA, dns.TypeAAAA} // Query both A and AAAA by default
+		queryTypes = []uint16{dns.TypeA, dns.TypeAAAA}
 	}
 
 	var lastErr error
 	var wg sync.WaitGroup
-	var mu sync.Mutex // Protects ips and lastErr
-
+	var mu sync.Mutex
 	processedQueryType := make(map[uint16]bool)
 
 	for _, qtype := range queryTypes {
@@ -467,22 +432,19 @@ func resolveWithDoH(ctx context.Context, host string, ipv4Only, ipv6Only bool, i
 			mu.Lock()
 			currentErr := fmt.Errorf("failed to pack DNS query type %s: %w", dns.TypeToString[qtype], err)
 			if lastErr != nil {
-				lastErr = fmt.Errorf("%w; %w", lastErr, currentErr) // Chain errors
+				lastErr = fmt.Errorf("%w; %w", lastErr, currentErr)
 			} else {
 				lastErr = currentErr
 			}
 			mu.Unlock()
-			continue // Try next query type if packing fails
+			continue
 		}
 		b64 := base64.RawURLEncoding.EncodeToString(msg)
 
-		// Try multiple DoH servers concurrently for the same query type
-		queryCtx, queryCancel := context.WithCancel(ctx) // Context to cancel other servers once one succeeds for this qtype
-
-		typeAttempted := false // Track if any goroutine was launched for this type
+		queryCtx, queryCancel := context.WithCancel(ctx)
+		typeAttempted := false
 
 		for _, server := range dohServers {
-			// Skip server if its IP version doesn't match the forced flag, if any.
 			if (ipv4Only && !server.isV4) || (ipv6Only && server.isV4) {
 				continue
 			}
@@ -492,50 +454,45 @@ func resolveWithDoH(ctx context.Context, host string, ipv4Only, ipv6Only bool, i
 			go func(server struct {
 				address, sni string
 				isV4         bool
-			}, currentQType uint16) { // Pass currentQType explicitly
+			}, currentQType uint16) {
 				defer wg.Done()
 				select {
-				case <-queryCtx.Done(): // Check if another goroutine succeeded for this qtype
+				case <-queryCtx.Done():
 					return
 				default:
 				}
 
-				// Create a temporary, short-lived client *per attempt* for DoH request
 				dialer := &net.Dialer{Timeout: 3 * time.Second}
 				dohTransport := &http.Transport{
 					TLSClientConfig: &tls.Config{
 						ServerName:         server.sni,
-						RootCAs:            rootCAs,            // Use the passed-in pool
-						InsecureSkipVerify: insecureSkipVerify, // Apply flag here too
+						RootCAs:            rootCAs, // Use the passed-in (potentially augmented) pool
+						InsecureSkipVerify: insecureSkipVerify,
 					},
-					Proxy: http.ProxyFromEnvironment, // Respect proxy for DoH too
+					Proxy: http.ProxyFromEnvironment,
 					DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 						dohNet := "tcp4"
 						if !server.isV4 {
 							dohNet = "tcp6"
 						}
-						// Use a context with timeout for the dial itself
 						dialCtx, dialCancel := context.WithTimeout(ctx, 3*time.Second)
 						defer dialCancel()
-						// server.address should now be correctly formatted (e.g., "[::1]:443")
 						return dialer.DialContext(dialCtx, dohNet, server.address)
 					},
-					DisableKeepAlives:     true, // DoH requests are typically single-use
-					ForceAttemptHTTP2:     true, // Try HTTP/2
+					DisableKeepAlives:     true,
+					ForceAttemptHTTP2:     true,
 					TLSHandshakeTimeout:   3 * time.Second,
 					ExpectContinueTimeout: 1 * time.Second,
 				}
 				dohClient := &http.Client{
 					Transport: dohTransport,
-					Timeout:   5 * time.Second, // Overall timeout for the DoH request
+					Timeout:   5 * time.Second,
 				}
-				// Create a request context with timeout derived from the query context
 				reqCtx, reqCancel := context.WithTimeout(queryCtx, 5*time.Second)
 				defer reqCancel()
 				req, err := http.NewRequestWithContext(reqCtx, "GET", fmt.Sprintf("https://%s/dns-query?dns=%s", server.sni, b64), nil)
 				if err != nil {
 					mu.Lock()
-					// Check if context was already cancelled (e.g., another goroutine succeeded)
 					if !errors.Is(reqCtx.Err(), context.Canceled) {
 						currentErr := fmt.Errorf("failed creating DoH request to %s (%s): %w", server.sni, server.address, err)
 						if lastErr != nil {
@@ -556,12 +513,11 @@ func resolveWithDoH(ctx context.Context, host string, ipv4Only, ipv6Only bool, i
 						if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "context deadline exceeded") {
 							errStr += " (timeout)"
 						}
-						// Add hint for certificate errors
 						var certErr *x509.UnknownAuthorityError
 						if errors.As(err, &certErr) || strings.Contains(err.Error(), "certificate signed by unknown authority") {
 							errStr += " (certificate verification failed)"
 						}
-						currentErr := errors.New(errStr) // Use errors.New for simple string
+						currentErr := errors.New(errStr)
 						if lastErr != nil {
 							lastErr = fmt.Errorf("%w; %w", lastErr, currentErr)
 						} else {
@@ -571,12 +527,11 @@ func resolveWithDoH(ctx context.Context, host string, ipv4Only, ipv6Only bool, i
 					mu.Unlock()
 					return
 				}
-				defer resp.Body.Close() // Ensure body is closed
+				defer resp.Body.Close()
 
 				if resp.StatusCode != http.StatusOK {
 					mu.Lock()
 					if !errors.Is(reqCtx.Err(), context.Canceled) {
-						// Read body for potential error details, but limit size
 						bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 						currentErr := fmt.Errorf("DoH request to %s (%s) returned status %d [%s]", server.sni, server.address, resp.StatusCode, string(bodyBytes))
 						if lastErr != nil {
@@ -617,9 +572,7 @@ func resolveWithDoH(ctx context.Context, host string, ipv4Only, ipv6Only bool, i
 					return
 				}
 
-				// Process answers
 				mu.Lock()
-				// Check if context was cancelled *before* modifying shared state
 				if errors.Is(queryCtx.Err(), context.Canceled) {
 					mu.Unlock()
 					return
@@ -628,13 +581,11 @@ func resolveWithDoH(ctx context.Context, host string, ipv4Only, ipv6Only bool, i
 				for _, ans := range response.Answer {
 					switch a := ans.(type) {
 					case *dns.A:
-						// Add A if IPv6 is not exclusively requested AND this query was for A records
 						if !ipv6Only && currentQType == dns.TypeA && !a.A.IsUnspecified() && !a.A.IsLoopback() {
 							ips = append(ips, a.A)
 							addedRelevantIP = true
 						}
 					case *dns.AAAA:
-						// Add AAAA if IPv4 is not exclusively requested AND this query was for AAAA records
 						if !ipv4Only && currentQType == dns.TypeAAAA && !a.AAAA.IsUnspecified() && !a.AAAA.IsLoopback() {
 							ips = append(ips, a.AAAA)
 							addedRelevantIP = true
@@ -642,23 +593,19 @@ func resolveWithDoH(ctx context.Context, host string, ipv4Only, ipv6Only bool, i
 					}
 				}
 
-				// If we successfully added IPs of the type we were looking for, mark type as processed and cancel others
 				if addedRelevantIP && !processedQueryType[currentQType] {
 					processedQueryType[currentQType] = true
-					queryCancel() // Cancel other goroutines for this query type
+					queryCancel()
 				}
 				mu.Unlock()
-			}(server, qtype) // Pass server info by value and qtype
-		} // End loop through DoH servers for a specific query type
+			}(server, qtype)
+		}
 
-		// Correct placement for queryCancel: Cancel after waiting for this type's goroutines
-		// Only wait if goroutines were actually launched for this type
 		if typeAttempted {
 			wg.Wait()
 		}
-		queryCancel() // Cancel context after waiting or if no attempts were made
+		queryCancel()
 
-		// Check if we have the results we need after this query type
 		mu.Lock()
 		if len(ips) > 0 {
 			hasIPv4 := false
@@ -670,40 +617,32 @@ func resolveWithDoH(ctx context.Context, host string, ipv4Only, ipv6Only bool, i
 					hasIPv6 = true
 				}
 			}
-			// If only one type was needed and we have it, stop early
 			if (ipv4Only && hasIPv4) || (ipv6Only && hasIPv6) {
 				mu.Unlock()
-				break // Break the outer query type loop
+				break
 			}
-			// If both were allowed (default), and we have found at least one IP,
-			// we can potentially stop early if we have *both* types.
 			if !ipv4Only && !ipv6Only && hasIPv4 && hasIPv6 {
-				// Consider breaking here if having both is sufficient
-				// mu.Unlock()
+				// mu.Unlock() // Optional: break if both found and both allowed
 				// break
 			}
 		}
 		mu.Unlock()
-
-	} // End of query type loop
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
 	if len(ips) > 0 {
-		// Filter final list one more time based on flags, remove unspecified/loopback and duplicates
 		filteredIPs := ips[:0]
-		uniqueIPs := make(map[string]struct{}) // Avoid duplicates
+		uniqueIPs := make(map[string]struct{})
 		for _, ip := range ips {
 			ipStr := ip.String()
 			if _, exists := uniqueIPs[ipStr]; exists {
 				continue
 			}
-			// Ensure IP is not unspecified or loopback
 			if ip.IsUnspecified() || ip.IsLoopback() {
 				continue
 			}
 			isIPv4 := ip.To4() != nil
-			// Apply strict filtering based on flags
 			if (ipv4Only && !isIPv4) || (ipv6Only && isIPv4) {
 				continue
 			}
@@ -713,7 +652,6 @@ func resolveWithDoH(ctx context.Context, host string, ipv4Only, ipv6Only bool, i
 		if len(filteredIPs) > 0 {
 			return filteredIPs, nil
 		}
-		// If filtering removed all IPs, create or append error
 		currentErr := fmt.Errorf("doH returned IPs, but none matched filter or were usable (ipv4=%v, ipv6=%v)", ipv4Only, ipv6Only)
 		if lastErr != nil {
 			lastErr = fmt.Errorf("%w; %w", lastErr, currentErr)
@@ -722,15 +660,10 @@ func resolveWithDoH(ctx context.Context, host string, ipv4Only, ipv6Only bool, i
 		}
 	}
 
-	// If no IPs found or all were filtered out
 	baseErrMsg := fmt.Sprintf("doH attempts failed for %s", host)
 	if lastErr != nil {
-		// SA4006/SA4017 Fix: Directly use baseErrMsg in the final fmt.Errorf
 		return nil, fmt.Errorf("%s: %w", baseErrMsg, lastErr)
 	}
-
-	// This path should ideally not be reached if logic is correct, but handle defensively
-	// SA4006/SA4017 Fix: Directly use baseErrMsg and create a new error for lastErr
 	lastErr = errors.New("no usable IPs resolved via DoH")
 	return nil, fmt.Errorf("%s: %w", baseErrMsg, lastErr)
 }
@@ -741,22 +674,18 @@ func resolveWithDirectDNS(ctx context.Context, host string, ipv4Only, ipv6Only b
 		addr string
 		isV4 bool
 	}{
-		// Cloudflare
 		{"1.1.1.1:53", true},
 		{"1.0.0.1:53", true},
-		{"[2606:4700:4700::1111]:53", false}, // Format is correct for miekg/dns
-		{"[2606:4700:4700::1001]:53", false}, // Format is correct for miekg/dns
-		// Google
+		{"[2606:4700:4700::1111]:53", false},
+		{"[2606:4700:4700::1001]:53", false},
 		{"8.8.8.8:53", true},
 		{"8.8.4.4:53", true},
-		{"[2001:4860:4860::8888]:53", false}, // Format is correct for miekg/dns
-		{"[2001:4860:4860::8844]:53", false}, // Format is correct for miekg/dns
-		// Quad9
+		{"[2001:4860:4860::8888]:53", false},
+		{"[2001:4860:4860::8844]:53", false},
 		{"9.9.9.9:53", true},
-		{"[2620:fe::fe]:53", false}, // Format is correct for miekg/dns
+		{"[2620:fe::fe]:53", false},
 	}
 
-	// Shuffle servers
 	rand.Shuffle(len(servers), func(i, j int) {
 		servers[i], servers[j] = servers[j], servers[i]
 	})
@@ -774,12 +703,9 @@ func resolveWithDirectDNS(ctx context.Context, host string, ipv4Only, ipv6Only b
 	var ips []net.IP
 	var lastErr error
 	var wg sync.WaitGroup
-	var mu sync.Mutex // Protects ips and lastErr
-
+	var mu sync.Mutex
 	processedQueryType := make(map[uint16]bool)
 
-	// Create clients once
-	// Use slightly longer timeouts for direct DNS as it might traverse more hops
 	dnsClientUDP := &dns.Client{Net: "udp", Timeout: 3 * time.Second}
 	dnsClientTCP := &dns.Client{Net: "tcp", Timeout: 4 * time.Second}
 
@@ -787,45 +713,37 @@ func resolveWithDirectDNS(ctx context.Context, host string, ipv4Only, ipv6Only b
 		m := new(dns.Msg)
 		m.SetQuestion(dns.Fqdn(host), qtype)
 		m.RecursionDesired = true
-		m.SetEdns0(4096, true) // Request EDNS for larger UDP responses
+		m.SetEdns0(4096, true)
 
-		queryCtx, queryCancel := context.WithCancel(ctx) // Context for this query type
-
-		typeAttempted := false // Track if any goroutine was launched for this type
+		queryCtx, queryCancel := context.WithCancel(ctx)
+		typeAttempted := false
 
 		for _, server := range servers {
-			// Skip server if its IP version doesn't match the forced flag
 			if (ipv4Only && !server.isV4) || (ipv6Only && server.isV4) {
 				continue
 			}
 
 			typeAttempted = true
 			wg.Add(1)
-			go func(serverAddr string, currentQType uint16) { // Pass qtype explicitly
+			go func(serverAddr string, currentQType uint16) {
 				defer wg.Done()
 				select {
 				case <-queryCtx.Done():
-					return // Stop if another goroutine succeeded for this type
+					return
 				default:
 				}
 
 				var response *dns.Msg
 				var err error
-				var rtt time.Duration // Unused but returned by ExchangeContext
+				var rtt time.Duration
 				attemptedTCP := false
 
-				// Create a context for the UDP attempt derived from queryCtx
 				udpCtx, udpCancel := context.WithTimeout(queryCtx, dnsClientUDP.Timeout)
-				defer udpCancel() // Ensure cancellation
-
-				// Try UDP first
 				response, rtt, err = dnsClientUDP.ExchangeContext(udpCtx, m, serverAddr)
+				udpCancel() // Release resources associated with udpCtx
 
-				// Check conditions for TCP retry: network error, timeout, or truncated response
 				needsTCPRetry := false
 				if err != nil {
-					// Retry on timeout or if the context specific to UDP expired
-					// Do not retry if the parent context (queryCtx) was cancelled
 					if !errors.Is(queryCtx.Err(), context.Canceled) && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded)) {
 						needsTCPRetry = true
 					}
@@ -833,24 +751,21 @@ func resolveWithDirectDNS(ctx context.Context, host string, ipv4Only, ipv6Only b
 					needsTCPRetry = true
 				}
 
-				// Retry with TCP if needed and not already successful (and not cancelled)
-				var tcpCtx context.Context // Declare tcpCtx here
+				var tcpCtx context.Context
 				var tcpCancel context.CancelFunc
 				if needsTCPRetry && !errors.Is(queryCtx.Err(), context.Canceled) && (response == nil || response.Rcode != dns.RcodeSuccess) {
 					attemptedTCP = true
-					// Create a context for the TCP attempt
-					tcpCtx, tcpCancel = context.WithTimeout(queryCtx, dnsClientTCP.Timeout) // Assign to declared variables
-					defer tcpCancel()
+					tcpCtx, tcpCancel = context.WithTimeout(queryCtx, dnsClientTCP.Timeout)
 					response, rtt, err = dnsClientTCP.ExchangeContext(tcpCtx, m, serverAddr)
-					// Check for parent cancellation again after TCP attempt
+					if tcpCancel != nil { // tcpCancel is nil if context wasn't created
+						tcpCancel() // Release resources associated with tcpCtx
+					}
 					if errors.Is(queryCtx.Err(), context.Canceled) {
-						return // Stop processing if cancelled during TCP attempt
+						return
 					}
 				}
 
-				// --- Process the final result (either UDP or TCP) ---
-				mu.Lock() // Lock before checking errors or processing results
-				// Check for cancellation *before* processing error/result
+				mu.Lock()
 				if errors.Is(queryCtx.Err(), context.Canceled) {
 					mu.Unlock()
 					return
@@ -865,35 +780,37 @@ func resolveWithDirectDNS(ctx context.Context, host string, ipv4Only, ipv6Only b
 					if response != nil && response.Rcode != dns.RcodeSuccess {
 						errStr += fmt.Sprintf(" (RCODE: %s)", dns.RcodeToString[response.Rcode])
 					}
-					// Check specific context errors for timeout hints
-					// FIX: Check queryCtx.Err() instead of ctx directly. Also check tcpCtx.Err() if attemptedTCP.
-					if errors.Is(err, context.DeadlineExceeded) || errors.Is(udpCtx.Err(), context.DeadlineExceeded) || (attemptedTCP && tcpCtx != nil && errors.Is(tcpCtx.Err(), context.DeadlineExceeded)) || errors.Is(queryCtx.Err(), context.DeadlineExceeded) {
+
+					// Check various contexts for timeout
+					timeoutOccurred := errors.Is(err, context.DeadlineExceeded) ||
+						(udpCtx != nil && errors.Is(udpCtx.Err(), context.DeadlineExceeded)) || // Check original UDP context
+						(attemptedTCP && tcpCtx != nil && errors.Is(tcpCtx.Err(), context.DeadlineExceeded)) || // Check TCP context
+						errors.Is(queryCtx.Err(), context.DeadlineExceeded) // Check overall query type context
+
+					if timeoutOccurred {
 						errStr += " (timeout)"
 					}
 
-					currentErr := errors.New(errStr) // Use errors.New for simple string
+					currentErr := errors.New(errStr)
 					if lastErr != nil {
 						lastErr = fmt.Errorf("%w; %w", lastErr, currentErr)
 					} else {
 						lastErr = currentErr
 					}
 					mu.Unlock()
-					return // Query failed
+					return
 				}
 
-				// Process successful response
-				_ = rtt // RTT not used currently
+				_ = rtt
 				addedRelevantIP := false
 				for _, ans := range response.Answer {
 					switch a := ans.(type) {
 					case *dns.A:
-						// Add A if IPv6 is not exclusively requested AND this query was for A records
 						if !ipv6Only && currentQType == dns.TypeA && !a.A.IsUnspecified() && !a.A.IsLoopback() {
 							ips = append(ips, a.A)
 							addedRelevantIP = true
 						}
 					case *dns.AAAA:
-						// Add AAAA if IPv4 is not exclusively requested AND this query was for AAAA records
 						if !ipv4Only && currentQType == dns.TypeAAAA && !a.AAAA.IsUnspecified() && !a.AAAA.IsLoopback() {
 							ips = append(ips, a.AAAA)
 							addedRelevantIP = true
@@ -903,20 +820,18 @@ func resolveWithDirectDNS(ctx context.Context, host string, ipv4Only, ipv6Only b
 
 				if addedRelevantIP && !processedQueryType[currentQType] {
 					processedQueryType[currentQType] = true
-					queryCancel() // Cancel others for this query type
+					queryCancel()
 				}
 				mu.Unlock()
 
-			}(server.addr, qtype) // Pass server address and qtype by value
-		} // End loop through direct DNS servers
-
-		// Correct placement for queryCancel
-		if typeAttempted {
-			wg.Wait() // Wait for all direct DNS attempts for this qtype
+			}(server.addr, qtype)
 		}
-		queryCancel() // Cancel context after waiting or if no attempts made
 
-		// Check if we have the needed results
+		if typeAttempted {
+			wg.Wait()
+		}
+		queryCancel()
+
 		mu.Lock()
 		if len(ips) > 0 {
 			hasIPv4 := false
@@ -928,25 +843,22 @@ func resolveWithDirectDNS(ctx context.Context, host string, ipv4Only, ipv6Only b
 					hasIPv6 = true
 				}
 			}
-			// Stop early if the required IP family has been found
 			if (ipv4Only && hasIPv4) || (ipv6Only && hasIPv6) {
 				mu.Unlock()
-				break // Stop querying other types
+				break
 			}
-			// If both allowed and we have both, consider stopping
 			if !ipv4Only && !ipv6Only && hasIPv4 && hasIPv6 {
-				// mu.Unlock() // Potentially break early
+				// mu.Unlock()
 				// break
 			}
 		}
 		mu.Unlock()
-	} // End query type loop
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
 
 	if len(ips) > 0 {
-		// Filter final list one more time based on flags, remove unspecified/loopback and duplicates
 		filteredIPs := ips[:0]
 		uniqueIPs := make(map[string]struct{})
 		for _, ip := range ips {
@@ -954,12 +866,10 @@ func resolveWithDirectDNS(ctx context.Context, host string, ipv4Only, ipv6Only b
 			if _, exists := uniqueIPs[ipStr]; exists {
 				continue
 			}
-			// Ensure IP is not unspecified or loopback
 			if ip.IsUnspecified() || ip.IsLoopback() {
 				continue
 			}
 			isIPv4 := ip.To4() != nil
-			// Apply strict filtering
 			if (ipv4Only && !isIPv4) || (ipv6Only && isIPv4) {
 				continue
 			}
@@ -969,7 +879,6 @@ func resolveWithDirectDNS(ctx context.Context, host string, ipv4Only, ipv6Only b
 		if len(filteredIPs) > 0 {
 			return filteredIPs, nil
 		}
-		// If filtering removed all IPs, create or append error
 		currentErr := fmt.Errorf("direct DNS returned IPs, but none matched filter or were usable (ipv4=%v, ipv6=%v)", ipv4Only, ipv6Only)
 		if lastErr != nil {
 			lastErr = fmt.Errorf("%w; %w", lastErr, currentErr)
@@ -978,15 +887,10 @@ func resolveWithDirectDNS(ctx context.Context, host string, ipv4Only, ipv6Only b
 		}
 	}
 
-	// If no IPs found or all filtered
 	baseErrMsg := fmt.Sprintf("direct DNS attempts failed for %s", host)
 	if lastErr != nil {
-		// SA4006/SA4017 Fix: Directly use baseErrMsg in the final fmt.Errorf
 		return nil, fmt.Errorf("%s: %w", baseErrMsg, lastErr)
 	}
-
-	// This path should ideally not be reached if logic is correct, but handle defensively
-	// SA4006/SA4017 Fix: Directly use baseErrMsg and create a new error for lastErr
 	lastErr = errors.New("no usable IPs resolved via direct DNS")
 	return nil, fmt.Errorf("%s: %w", baseErrMsg, lastErr)
 }

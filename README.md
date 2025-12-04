@@ -30,13 +30,11 @@ speedflare is a command-line utility inspired by speedtest-go, designed to test 
 
 ### Prebuilt Binaries
 
-1. Visit the [Releases page](https://github.com/idanyas/speedflare/releases).
-2. Download the binary for your OS/architecture.
-3. Make it executable and run:
-   ```bash
-   chmod +x speedflare
-   ./speedflare
-   ```
+```bash
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/;s/arm.*/arm/;s/i.86/i386/')
+curl -Lo speedflare "https://github.com/idanyas/speedflare/releases/latest/download/speedflare_linux_${ARCH}"
+chmod +x speedflare && sudo mv speedflare /usr/local/bin/
+```
 
 ### Via Go Install
 

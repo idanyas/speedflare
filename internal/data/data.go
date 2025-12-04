@@ -18,11 +18,13 @@ type TestResult struct {
 }
 
 type Server struct {
-	IATA    string  `json:"iata"`
-	City    string  `json:"city"`
-	Country string  `json:"country"`
-	Lat     float64 `json:"lat"`
-	Lon     float64 `json:"lon"`
+	IATA     string  `json:"iata"`
+	City     string  `json:"city"`
+	Country  string  `json:"country"`
+	Lat      float64 `json:"lat"`
+	Lon      float64 `json:"lon"`
+	IP       string  `json:"ip,omitempty"`       // The Anycast IP used
+	Distance float64 `json:"distance,omitempty"` // Distance from user in km
 }
 
 type Stats struct {

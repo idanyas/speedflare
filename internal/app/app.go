@@ -13,12 +13,13 @@ import (
 
 	"github.com/fatih/color"
 
+	"github.com/idanyas/speedflare/internal/client"
 	"github.com/idanyas/speedflare/internal/data"
 	"github.com/idanyas/speedflare/internal/location"
 	"github.com/idanyas/speedflare/internal/output"
 )
 
-func RunSpeedTest(client *http.Client, latencyAttempts int, workers int, singleConnection bool, jsonOutput bool) (*data.TestResult, error) {
+func RunSpeedTest(client *http.Client, latencyAttempts int, workers int, singleConnection bool, jsonOutput bool, suppressIntro bool, hideIP bool) (*data.TestResult, error) {
 	trace, err := location.GetServerTrace(client)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get server info: %w", err)
@@ -34,7 +35,9 @@ func RunSpeedTest(client *http.Client, latencyAttempts int, workers int, singleC
 		return nil, err
 	}
 
-	output.PrintConnectionInfo(trace, server, jsonOutput)
+	if !suppressIntro {
+		output.PrintConnectionInfo(trace, server, jsonOutput, hideIP)
+	}
 
 	latency, err := measureLatency(client, latencyAttempts)
 	if err != nil {
@@ -45,8 +48,13 @@ func RunSpeedTest(client *http.Client, latencyAttempts int, workers int, singleC
 	download := runTest("Download:", downloadWorker, client, !singleConnection, workers, jsonOutput)
 	upload := runTest("Upload:", uploadWorker, client, !singleConnection, workers, jsonOutput)
 
+	resultIP := trace["ip"]
+	if hideIP {
+		resultIP = "---"
+	}
+
 	return &data.TestResult{
-		IP:     trace["ip"],
+		IP:     resultIP,
 		Server: server,
 		Latency: data.Stats{
 			Value:  latency.Avg,
@@ -65,12 +73,16 @@ func RunSpeedTest(client *http.Client, latencyAttempts int, workers int, singleC
 	}, nil
 }
 
-func measureLatency(client *http.Client, latencyAttempts int) (*data.LatencyResult, error) {
+func measureLatency(c *http.Client, latencyAttempts int) (*data.LatencyResult, error) {
 	attempts := latencyAttempts
 	var latencies []float64
 
-	transport, ok := client.Transport.(*http.Transport)
-	if !ok {
+	var transport *http.Transport
+	if t, ok := c.Transport.(*http.Transport); ok {
+		transport = t
+	} else if t, ok := c.Transport.(*client.BrowserTransport); ok {
+		transport = t.Transport
+	} else {
 		return nil, fmt.Errorf("invalid transport type, expected *http.Transport")
 	}
 

@@ -1,6 +1,6 @@
 module github.com/idanyas/speedflare
 
-go 1.22.0
+go 1.24
 
 toolchain go1.24.1
 
@@ -11,6 +11,9 @@ require (
 )
 
 require (
+	github.com/chzyer/readline v0.0.0-20180603132655-2972be24d48e // indirect
+	github.com/manifoldco/promptui v0.9.0 // indirect
+	github.com/supcik/go-countries v0.1.1 // indirect
 	golang.org/x/mod v0.23.0 // indirect
 	golang.org/x/net v0.35.0 // indirect
 	golang.org/x/sync v0.11.0 // indirect

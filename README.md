@@ -28,7 +28,7 @@ speedflare is a command-line utility inspired by speedtest-go, designed to test 
 
 ## Installation
 
-### Prebuilt Binaries
+### Prebuilt Binaries, Linux snippet
 
 ```bash
 ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/;s/arm.*/arm/;s/i.86/i386/')
